@@ -26,5 +26,8 @@
     "eslint": "^8.15.0",
     "eslint-config-google": "^0.14.0"
   },
+  "overrides": {
+    "undici": "5.28.3"
+  },
   "private": true
 }
