@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RB PC Building Service</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    <style>
+        .component-item.incompatible {
+            background-color: #fee2e2; /* light red */
+            border-color: #ef4444; /* red */
+        }
+        .dark .component-item.incompatible {
+            background-color: #3f1a1a; /* dark red */
+            border-color: #ef4444; /* red */
+        }
+        #part-selector-modal {
+            transition: opacity 0.3s ease;
+        }
+        .hero-section {
+            position: relative;
+            overflow: hidden;
+        }
+        .slideshow {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 0;
+        }
+        .slide {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            transition: opacity 1.5s ease-in-out;
+        }
+        .slide.active {
+            opacity: 1;
+        }
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #4f46e5;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-sans transition-colors duration-300">
+
+    <div id="app">
+        <!-- App content will be rendered here -->
+    </div>
+    <div id="modal-container">
+        <!-- Modal will be rendered here -->
+    </div>
+
+    <script type="module">
+        // Firebase Imports
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
+
+        // --- Firebase Configuration ---
+        const appId = 'a1dos-creations-25';
+        const firebaseConfig = {
+            apiKey: "AIzaSyDN1E5nYSj0aJQ66EEFf8NGH3lkDy64Cf8",
+            authDomain: "a1dos-creations-25.firebaseapp.com",
+            projectId: "a1dos-creations-25",
+            storageBucket: "a1dos-creations-25.firebasestorage.app",
+            messagingSenderId: "874801347017",
+            appId: "1:874801347017:web:8c63552a4bde3c519a9018",
+            measurementId: "G-H3HVX1034N"
+        };
+        
+        // --- Firebase Initialization ---
+        const firebaseApp = initializeApp(firebaseConfig);
+        const db = getFirestore(firebaseApp);
+        const auth = getAuth(firebaseApp);
+        const functions = getFunctions(firebaseApp); 
+
+        const backendUrl = "https://pccustombuildsbackendgit--a1dos-creations-25.us-central1.hosted.app/";
+
+        let userId = null;
+        let currentQuoteId = null;
+        let slideshowInterval = null;
+        let searchTimeout = null; // For debouncing search input
+
+        // --- Authentication ---
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                userId = user.uid;
+                console.log("User is signed in with UID:", userId);
+                handleRouteChange(); 
+            } else {
+                try {
+                    await signInAnonymously(auth);
+                } catch (error) {
+                    console.error("Authentication Error:", error);
+                }
+            }
+        });
+        
+        const componentTypes = [
+            'cpu', 'cpuCooler', 'motherboard', 'memory', 
+            'storage', 'gpu', 'case', 'psu'
+        ];
+
+        let state = {
+            currentPage: 'home',
+            selectedParts: {},
+            compatibilityIssues: {},
+            quoteStatus: null, 
+            finalQuote: null,
+            modal: { 
+                isOpen: false, 
+                type: null, 
+                searchTerm: '',
+                searchResults: [],
+                isLoading: false,
+                error: null,
+            }
+        };
+
+        function navigate(page, quoteId = null) {
+            let hash = `#${page}`;
+            if (page === 'quote' && quoteId) { hash += `/${quoteId}`; }
+            window.location.hash = hash;
+        }
+
+        window.addEventListener('hashchange', handleRouteChange);
+
+        function handleRouteChange() {
+            if (slideshowInterval) clearInterval(slideshowInterval);
+            const hash = window.location.hash.slice(1);
+            const [page, quoteId] = hash.split('/');
+            state.currentPage = page || 'home';
+            currentQuoteId = quoteId || null;
+            if (state.currentPage === 'quote' && currentQuoteId) {
+                listenToQuote(currentQuoteId);
+            }
+            renderApp();
+        }
+
+        function checkCompatibility() {
+            const { cpu, motherboard, cpuCooler } = state.selectedParts;
+            const issues = {};
+            if (cpu && motherboard && cpu.socket !== motherboard.socket) {
+                issues.cpu = 'CPU socket does not match motherboard socket.';
+                issues.motherboard = 'Motherboard socket does not match CPU socket.';
+            }
+            if (cpu && cpuCooler && cpuCooler.socket && !cpuCooler.socket.includes(cpu.socket)) {
+                 issues.cpuCooler = `Cooler does not support ${cpu.socket} socket.`;
+            }
+            if (motherboard && cpuCooler && cpuCooler.socket && !cpuCooler.socket.includes(motherboard.socket)) {
+                 issues.cpuCooler = `Cooler does not support ${motherboard.socket} socket.`;
+            }
+            state.compatibilityIssues = issues;
+        }
+
+        const appContainer = document.getElementById('app');
+        const modalContainer = document.getElementById('modal-container');
+
+        function renderApp() {
+             if (!userId) {
+                appContainer.innerHTML = `<div class="text-center py-20">Authenticating...</div>`;
+                return;
+            }
+            let html = `<nav class="bg-white dark:bg-gray-800 shadow-md sticky top-0 z-40"><div class="container mx-auto px-6 py-3 flex justify-between items-center"><a href="#home" class="text-2xl font-bold text-gray-800 dark:text-white lg:text-3xl hover:text-gray-700 dark:hover:text-gray-300">A1dos Builds</a><div class="flex items-center"><a href="#home" class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:text-indigo-500 dark:hover:text-indigo-400">Home</a><a href="#builder" class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:text-indigo-500 dark:hover:text-indigo-400">Build Your PC</a><button id="theme-toggle" class="ml-4 p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 focus:outline-none"></button></div></div></nav>`;
+            if (state.currentPage === 'home') { html += renderHomePage(); } 
+            else if (state.currentPage === 'builder') { html += renderBuilderPage(); } 
+            else if (state.currentPage === 'quote') { html += renderQuotePage(); } 
+            else { html += renderHomePage(); }
+            appContainer.innerHTML = html;
+            modalContainer.innerHTML = renderModal();
+            setupEventListeners();
+            updateThemeIcon();
+        }
+
+        function renderHomePage() {
+            setTimeout(startSlideshow, 0);
+            return `<div class="hero-section"><div class="slideshow"><div class="slide bg-purple-900 bg-opacity-50"></div><div class="slide bg-green-900 bg-opacity-50"></div><div class="slide bg-orange-900 bg-opacity-50"></div></div><div class="container mx-auto px-6 py-24 text-center relative z-10"><div class="max-w-lg mx-auto"><h1 class="text-4xl font-extrabold text-white md:text-5xl">Craft Your Dream PC</h1><p class="mt-6 text-gray-200">From high-performance gaming rigs to powerful workstations, we build custom PCs tailored to your exact needs. Let's create something amazing together.</p><a href="#builder" class="mt-8 inline-block px-8 py-4 bg-indigo-600 text-white text-lg font-medium rounded-lg hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-50 transform hover:scale-105 transition-transform duration-300">Start Your Build</a></div></div></div><div class="bg-white dark:bg-gray-800 py-12"><div class="container mx-auto px-6"><h2 class="text-3xl font-bold text-center text-gray-800 dark:text-white mb-8">About Us</h2><p class="mt-4 max-w-2xl mx-auto text-center text-gray-600 dark:text-gray-400">We are passionate PC enthusiasts dedicated to building high-quality, reliable, and beautiful custom computers. With years of experience, we meticulously select each component and assemble every machine with care, ensuring peak performance and stability. Your dream PC is our mission.</p></div></div>`;
+        }
+
+        function renderBuilderPage() {
+            let total = Object.values(state.selectedParts).reduce((sum, part) => sum + part.price, 0);
+            let content = `<div class="container mx-auto px-4 sm:px-6 lg:px-8 py-12"><h1 class="text-3xl font-bold text-center mb-8">Build Your Custom PC</h1><div class="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">`;
+            componentTypes.forEach(type => {
+                const selected = state.selectedParts[type];
+                const issue = state.compatibilityIssues[type];
+                const typeName = type.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
+                content += `<div class="component-item border-b border-gray-200 dark:border-gray-700 py-4 ${issue ? 'incompatible' : ''}"><div class="flex flex-wrap items-center justify-between gap-4"><h3 class="text-xl font-semibold capitalize">${typeName}</h3>${selected ? `<div class="flex items-center space-x-4"><img src="${selected.image}" alt="${selected.name}" class="w-12 h-12 object-contain rounded" onerror="this.onerror=null;this.src='https://placehold.co/100x100/313131/FFFFFF?text=Img';"><span class="font-medium">${selected.name}</span><span class="text-gray-500 dark:text-gray-400">$${selected.price.toFixed(2)}</span><button class="text-red-500 hover:text-red-700" onclick="window.handlePartSelection('${type}', null)">Remove</button></div>` : `<button class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500" onclick="window.openPartSelector('${type}')">Choose a ${typeName}</button>`}</div>${issue ? `<div class="mt-2 text-red-500 font-semibold p-3 bg-red-100 dark:bg-red-900/50 rounded-md"><p>Compatibility Warning: ${issue}</p></div>` : ''}</div>`;
+            });
+            content += `</div><div class="mt-8 flex justify-end items-center"><span class="text-2xl font-bold mr-4">Estimated Total: $${total.toFixed(2)}</span><button class="px-8 py-4 bg-green-600 text-white text-lg font-medium rounded-lg hover:bg-green-500" onclick="window.handleCheckout()">Request Quote</button></div></div>`;
+            return content;
+        }
+        
+        function renderQuotePage() {
+            if (state.quoteStatus === 'loading') { return `<div class="text-center py-20">Loading quote...</div>`; }
+            if (state.quoteStatus === 'not_found') { return `<div class="text-center py-20">Quote not found.</div>`; }
+            if (state.quoteStatus === 'processing') { return `<div class="container mx-auto px-6 py-16 text-center"><h1 class="text-3xl font-bold">Your quote is being processed.</h1><p class="mt-4 text-gray-600 dark:text-gray-300">Please check back later.</p><div class="mt-6"><input type="text" readonly value="${window.location.href}" class="w-full max-w-md p-2 border rounded bg-gray-200 dark:bg-gray-700 text-center"></div></div>`; }
+            if (state.quoteStatus === 'quoted') {
+                let total = state.finalQuote.parts.reduce((sum, part) => sum + part.price, 0);
+                return `<div class="container mx-auto px-6 py-16"><h1 class="text-3xl font-bold text-center">Your Final Quote</h1><div class="mt-8 bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 max-w-2xl mx-auto"><h2 class="text-xl font-semibold mb-4">Quote ID: ${currentQuoteId}</h2><ul>${state.finalQuote.parts.map(part => `<li class="flex justify-between items-center py-2 border-b dark:border-gray-700"><span>${part.name}</span><span class="font-medium">$${part.price.toFixed(2)}</span></li>`).join('')}</ul><div class="mt-4 text-right"><p class="text-2xl font-bold">Final Price: $${total.toFixed(2)}</p></div><p class="mt-4 text-sm text-gray-500 dark:text-gray-400">${state.finalQuote.notes || ''}</p></div></div>`;
+            }
+            return `<div class="text-center py-20">Something went wrong.</div>`;
+        }
+        
+        function renderModal() {
+            if (!state.modal.isOpen) return '';
+            const { type, searchTerm, searchResults, isLoading, error } = state.modal;
+            const typeName = type.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
+            let content;
+            if (isLoading) { content = `<div class="flex justify-center items-center py-8"><div class="loader"></div></div>`; } 
+            else if (error) { content = `<p class="text-center text-red-500 py-8">${error}</p>`; } 
+            else if (searchResults.length === 0 && searchTerm) { content = `<p class="text-center text-gray-500 py-8">No parts found for "${searchTerm}".</p>`; } 
+            else {
+                content = searchResults.map(part => `<div class="flex items-center justify-between p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"><div class="flex items-center space-x-4"><img src="${part.image}" alt="${part.name}" class="w-16 h-16 object-contain rounded bg-white p-1" onerror="this.onerror=null;this.src='https://placehold.co/100x100/313131/FFFFFF?text=Img';"><div><p class="font-semibold">${part.name}</p><p class="text-sm text-gray-500 dark:text-gray-400">$${part.price.toFixed(2)}</p></div></div><button class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 text-sm" onclick='window.handlePartSelection("${type}", ${JSON.stringify(part)})'>Add</button></div>`).join('');
+            }
+            return `<div id="part-selector-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4"><div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col"><div class="p-4 border-b dark:border-gray-700 flex justify-between items-center"><h2 class="text-2xl font-bold capitalize">Select ${typeName}</h2><button onclick="window.closePartSelector()" class="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 text-3xl leading-none">&times;</button></div><div class="p-4 border-b dark:border-gray-700"><input type="text" placeholder="Search for parts..." oninput="window.handleSearchInput(this.value)" value="${searchTerm}" class="w-full px-4 py-2 border rounded-lg bg-gray-100 dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"></div><div class="overflow-y-auto p-4">${content}</div></div></div>`;
+        }
+
+        function setupEventListeners() {
+            const themeToggle = document.getElementById('theme-toggle');
+            if (themeToggle) { themeToggle.addEventListener('click', toggleTheme); }
+        }
+        function startSlideshow() {
+            const slides = document.querySelectorAll('.slide');
+            if (!slides.length) return;
+            let currentSlide = 0;
+            slides[currentSlide].classList.add('active');
+            slideshowInterval = setInterval(() => {
+                slides[currentSlide].classList.remove('active');
+                currentSlide = (currentSlide + 1) % slides.length;
+                slides[currentSlide].classList.add('active');
+            }, 3000);
+        }
+        function toggleTheme() {
+            document.documentElement.classList.toggle('dark');
+            localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+            updateThemeIcon();
+        }
+        function updateThemeIcon() {
+            const themeToggle = document.getElementById('theme-toggle');
+            if(themeToggle) {
+                const isDark = document.documentElement.classList.contains('dark');
+                themeToggle.innerHTML = isDark ? `<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" /></svg>` : `<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>`;
+            }
+        }
+        function handlePartSelection(type, part) {
+            if (!part) { delete state.selectedParts[type]; } 
+            else { state.selectedParts[type] = part; }
+            closePartSelector();
+            checkCompatibility();
+            renderApp();
+        };
+        async function handleCheckout() {
+            if (Object.keys(state.selectedParts).length === 0) {
+                alert("Please select at least one part before requesting a quote.");
+                return; 
+            }
+            const partsList = Object.values(state.selectedParts);
+            const estimatedTotal = partsList.reduce((sum, part) => sum + part.price, 0);
+
+            const newDocRef = doc(collection(db, `artifacts/${appId}/public/data/quotes`));
+            const quoteId = newDocRef.id;
+            
+            const quoteData = { 
+                parts: partsList, 
+                estimatedTotal: estimatedTotal, 
+                status: 'processing', 
+                createdAt: new Date(), 
+                userId: userId 
+            };
+
+            try {
+                await setDoc(newDocRef, quoteData);
+                
+                // Call the backend endpoint to send the email
+                await fetch(`${backendUrl}/sendQuoteEmail`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        quoteId: quoteId,
+                        parts: partsList,
+                        estimatedTotal: estimatedTotal
+                    })
+                });
+
+                navigate('quote', quoteId);
+
+            } catch (error) { 
+                console.error("Error during checkout:", error); 
+                alert("There was an error submitting your quote. Please try again.");
+            }
+        };
+        function openPartSelector(type) {
+            state.modal = { isOpen: true, type: type, searchTerm: '', searchResults: [], isLoading: false, error: null };
+            renderApp();
+        }
+        function closePartSelector() {
+            state.modal.isOpen = false;
+            renderApp();
+        }
+        
+        function handleSearchInput(term) {
+            state.modal.searchTerm = term;
+            clearTimeout(searchTimeout);
+            
+            if (!term) {
+                state.modal.searchResults = [];
+                state.modal.isLoading = false;
+                modalContainer.innerHTML = renderModal();
+                return;
+            }
+
+            searchTimeout = setTimeout(() => {
+                triggerSearch(term);
+            }, 300);
+        }
+
+        async function triggerSearch(term) {
+            state.modal.isLoading = true;
+            state.modal.error = null;
+            modalContainer.innerHTML = renderModal();
+
+            try {
+                const response = await fetch(`${backendUrl}/searchParts`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        partType: state.modal.type,
+                        searchTerm: term
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const result = await response.json();
+                state.modal.searchResults = result.results;
+
+            } catch (error) {
+                console.error("Error calling searchParts function:", error);
+                state.modal.error = "Could not fetch parts. Please try again later.";
+                state.modal.searchResults = [];
+            } finally {
+                state.modal.isLoading = false;
+                modalContainer.innerHTML = renderModal();
+            }
+        }
+
+        function setupApp() {
+            localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches) ? document.documentElement.classList.add('dark') : document.documentElement.classList.remove('dark');
+            const adminQuoteId = new URLSearchParams(window.location.search).get('admin_quote');
+            if (adminQuoteId) {
+                alert(`Admin view for quote: ${adminQuoteId}.`);
+                window.history.replaceState({}, document.title, window.location.pathname);
+            }
+            window.handlePartSelection = handlePartSelection;
+            window.handleCheckout = handleCheckout;
+            window.navigate = navigate;
+            window.openPartSelector = openPartSelector;
+            window.closePartSelector = closePartSelector;
+            window.handleSearchInput = handleSearchInput;
+            handleRouteChange();
+        }
+        function listenToQuote(quoteId) {
+            state.quoteStatus = 'loading';
+            renderApp();
+            const quoteRef = doc(db, `artifacts/${appId}/public/data/quotes`, quoteId);
+            onSnapshot(quoteRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    state.quoteStatus = data.status === 'quoted' ? 'quoted' : 'processing';
+                    if(data.status === 'quoted') state.finalQuote = data;
+                } else {
+                    state.quoteStatus = 'not_found';
+                }
+                renderApp();
+            }, (error) => {
+                console.error("Error listening to quote:", error);
+                state.quoteStatus = 'not_found';
+                renderApp();
+            });
+        }
+        setupApp();
+    </script>
+</body>
+</html>

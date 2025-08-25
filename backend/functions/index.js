@@ -17,14 +17,33 @@ app.use(express.json());
 // --- Core Logic (from your original functions) ---
 
 async function searchPartsLogic(partType, searchTerm) {
+  // 1. Get your API key from the environment variables we just set.
+  const apiKey = process.env.scrapingbee_api_key;
+
+  if (!apiKey) {
+    throw new Error("ScrapingBee API key is not configured.");
+  }
   if (!partType || !searchTerm) {
     throw new Error("partType and searchTerm are required.");
   }
-  const query = `${partType} ${searchTerm}`;
-  const url = `https://www.newegg.com/p/pl?d=${encodeURIComponent(query)}`;
 
-  const userAgent = "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
-  const response = await axios.get(url, { headers: { "User-Agent": userAgent } });
+  // 2. This is the original Newegg URL we want to scrape.
+  const targetUrl = `https://www.newegg.com/p/pl?d=${encodeURIComponent(partType + ' ' + searchTerm)}`;
+
+  // 3. We build the request to the ScrapingBee API.
+  const scrapingBeeUrl = 'https://app.scrapingbee.com/api/v1/';
+
+  // The parameters for the ScrapingBee API call.
+  const params = {
+    api_key: apiKey,
+    url: targetUrl,
+    render_js: false // Newegg doesn't require JavaScript to load products, so this is faster and cheaper.
+  };
+
+  // 4. We make the request to ScrapingBee, which will then request the page from Newegg for us.
+  const response = await axios.get(scrapingBeeUrl, { params: params });
+
+  // The rest of the logic is the same as before.
   const html = response.data;
   const $ = cheerio.load(html);
   const searchResults = [];
