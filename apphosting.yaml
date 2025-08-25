@@ -1,0 +1,14 @@
+# This file configures your Firebase App Hosting backend.
+run:
+  # Specifies the resources for your backend service
+  cpu: 1
+  memoryMiB: 512
+  # This section securely connects your secrets from Secret Manager
+  # to the environment variables your code uses.
+  secrets:
+    - secret: EMAIL_USER         # The name of the secret in Secret Manager
+      env: email_user             # The lowercase environment variable name for your code
+    - secret: EMAIL_PASS
+      env: email_pass
+    - secret: scrapingbee-api-key
+      env: scrapingbee_api_key
